@@ -8,6 +8,7 @@
 
 struct Player {
     String name = "";
+    String uuid = "";
     int connectionState = -1;
 };
 
@@ -18,6 +19,7 @@ struct Connection {
     unsigned long connectionStart;
     int8_t connectionState = -1;
     uint32_t packetCounter;
+    std::vector<uint8_t> recvBuffer;
 };
 
 extern std::vector<Connection> Connections;

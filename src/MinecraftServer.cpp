@@ -1,6 +1,6 @@
 #include "MinecraftFunctions.h"
 #include "functions/functions.h"
-
+#include <settings.h>
 // Definicje globalnych zmiennych
 std::vector<Connection> Connections;
 uint32_t nextConnectionId = 0;
@@ -53,7 +53,7 @@ void handleHandshakePacket(Connection &conn, const uint8_t* data, size_t length)
 
     int32_t nextState = readVarInt(data,  offset);
 
-    Serial.print("(Handshake detected, nextState = ");
+    Serial.print("(Handshake , Connection = ");
     Serial.print(nextState);
     Serial.print(") ");
 
@@ -96,6 +96,59 @@ void sendPongResponse(WiFiClient &client, const uint8_t* data, size_t length) {
 
 
 
+
+
+void parseLoginStart(const uint8_t* data, size_t length, Player* &player) {
+    size_t offset = 0;
+
+    String username = readString(data, offset);
+    String uuid     = readUUID(data, offset);
+
+    if (!player) {
+        player = new Player();
+    }
+    player->name = username;
+    player->uuid = uuid;
+
+    Serial.print("(loginStart user: ");
+    Serial.print(username);
+    Serial.print(" UUID: ");
+    Serial.print(uuid);
+    Serial.println(")");
+}
+
+
+
+void sendLoginSuccess(WiFiClient &client, Player* player) {
+    std::vector<uint8_t> packet;
+
+    // Packet ID = 0x02 (Login Success)
+    appendVarInt(packet, 0x02);
+
+    // UUID
+    appendUUID(packet, player->uuid);
+
+    // Username
+    appendString(packet, player->name);
+
+    // Properties - pusta lista
+    appendVarInt(packet, 0); // number of properties = 0
+
+    // Teraz pakiet gotowy, opakowujemy długość VarInt
+    std::vector<uint8_t> finalPacket;
+    appendVarInt(finalPacket, packet.size()); // długość pakietu
+    finalPacket.insert(finalPacket.end(), packet.begin(), packet.end());
+
+    // Wyślij do klienta
+    client.write(finalPacket.data(), finalPacket.size());
+
+    Serial.print("(Sent Login Success: ");
+    Serial.print(player->name);
+    Serial.print(" UUID: ");
+    Serial.print(player->uuid);
+    Serial.println(")");
+}
+
 void HandlePacket(Connection &conn, const uint8_t* data, size_t length) {
     size_t offset = 0;
 
@@ -126,13 +179,24 @@ void HandlePacket(Connection &conn, const uint8_t* data, size_t length) {
         handled = true;
     }
 
+    if (connectionState == 2) {
+        if (packetId == 0x00 && packetCounter == 1) { //LOGIN START
+            parseLoginStart(payload, payloadLength,conn.player);
+            sendLoginSuccess(conn.client, conn.player);
+            handled = true;
+            handled = false;
+        }
+    }
+
     if (connectionState == 1) {
         if (packetId == 0x00&& packetCounter == 0) { //PING
             sendStatusResponse(conn.client);
             handled = true;
-        } else if (packetId == 0x1&& packetCounter == 1) { //PONG
+        } else if (packetId == 0x1) { //PONG
             sendPongResponse(conn.client, payload, payloadLength);
             handled = true;
+        } else if (packetId == 0x00) {
+            handled = true;  //legacy shit
         }
     }
    
@@ -163,29 +227,71 @@ void HandlePacket(Connection &conn, const uint8_t* data, size_t length) {
 
 
 
- 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // Funkcja ticku serwera
 void MinecraftServerTick(WiFiServer &server) {
-    // Obsługa nowych klientów
     WiFiClient newClient = server.available();
     if (newClient) {
         Connection conn;
         conn.id = nextConnectionId++;
         conn.client = newClient;
-        conn.connectionStart = millis();
+        conn.connectionState = -1;
         conn.packetCounter = 0;
-        conn.player = nullptr; // nilowy wskaźnik
+        conn.player = nullptr;
 
         Connections.push_back(conn);
         Serial.print("Nowy klient połączony! ID: ");
         Serial.println(conn.id);
     }
 
-    // Iteracja po wszystkich połączeniach
     for (size_t i = 0; i < Connections.size(); i++) {
         Connection &conn = Connections[i];
 
-        // Sprawdzenie połączenia
         if (!conn.client.connected()) {
             Serial.print("Klient ID: ");
             Serial.print(conn.id);
@@ -196,14 +302,31 @@ void MinecraftServerTick(WiFiServer &server) {
             continue;
         }
 
-        // Odbieranie danych
-        if (conn.client.available()) {
+        while (conn.client.available()) {
             uint8_t buffer[256];
             size_t len = conn.client.read(buffer, sizeof(buffer));
+            if (len > 0) {
+                conn.recvBuffer.insert(conn.recvBuffer.end(), buffer, buffer + len);
 
-            HandlePacket(conn, buffer, len); // klient jest dostępny globalnie
-            conn.packetCounter++;
+                // Wyciąganie wszystkich pełnych pakietów
+                size_t processed = 0;
+                while (true) {
+                    size_t varIntSize = 0;
+                    int32_t packetLen = tryReadVarInt(conn.recvBuffer, processed, varIntSize);
+                    if (packetLen <= 0) break; // niekompletny lub błąd
+                    if (conn.recvBuffer.size() - processed - varIntSize < (size_t)packetLen) break;
+
+                    size_t totalPacketSize = varIntSize + packetLen;
+                    HandlePacket(conn, conn.recvBuffer.data() + processed, totalPacketSize);
+
+                    conn.packetCounter++;
+                    processed += totalPacketSize;
+                }
+
+                if (processed > 0) {
+                    conn.recvBuffer.erase(conn.recvBuffer.begin(), conn.recvBuffer.begin() + processed);
+                }
+            }
         }
-
     }
 }
