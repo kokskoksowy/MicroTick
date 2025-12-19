@@ -5,29 +5,30 @@
 #include "MinecraftFunctions.h"
 
 constexpr int SERVER_PORT = 25565;
-constexpr unsigned long TICK_INTERVAL = 50; // 20 razy na sekundę
+constexpr unsigned long TICK_INTERVAL = 50; 
 WiFiServer server(SERVER_PORT);
 unsigned long lastTick = 0;
 
 void setup() {
     Serial.begin(115200);
-    WiFIsetUP(); // Łączenie z Wi-Fi
+    WiFIsetUP(); 
     server.begin();
-
+    InitChunksAroundZero();
     Serial.print("Serwer nasłuchuje na porcie: ");
     Serial.println(SERVER_PORT);
 }
 
+bool enabled = true;
 void loop() {
     unsigned long now = millis();
     if (now - lastTick >= TICK_INTERVAL) {
         unsigned long tickStart = millis();
         lastTick = now;
 
-        // Tick Minecraft
+       
         MinecraftServerTick(server);
 
-        // Pomiar czasu ticka i użycia CPU
+        
         unsigned long tickEnd = millis();
         unsigned long tickDuration = tickEnd - tickStart;
 
@@ -36,7 +37,7 @@ void loop() {
         }
 
         float cpuUsage = (tickDuration / float(TICK_INTERVAL)) * 100.0;
-        if (cpuUsage > 25.0) {
+        if (cpuUsage > 25.0&&enabled == true) {
             Serial.print("Tick duration: "); Serial.print(tickDuration);
             Serial.print(" ms | CPU usage: "); Serial.print(cpuUsage); Serial.println("%");
             if (cpuUsage > 100) {

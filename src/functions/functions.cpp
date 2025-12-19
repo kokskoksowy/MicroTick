@@ -94,3 +94,43 @@ String readString(const uint8_t* data, size_t &offset) {
     buf[length] = '\0';
     return String(buf);
 }
+void appendFloat(std::vector<uint8_t>& buf, float value) {
+    static_assert(sizeof(float) == 4, "float must be 4 bytes");
+
+    union {
+        float f;
+        uint8_t b[4];
+    } u;
+
+    u.f = value;
+
+    // Minecraft używa BIG-ENDIAN
+    for (int i = 3; i >= 0; i--) {
+        buf.push_back(u.b[i]);
+    }
+}
+void appendDouble(std::vector<uint8_t>& buf, double value) {
+    static_assert(sizeof(double) == 8, "double must be 8 bytes");
+
+    union {
+        double d;
+        uint8_t b[8];
+    } u;
+
+    u.d = value;
+
+    // Minecraft używa BIG-ENDIAN
+    for (int i = 7; i >= 0; i--) {
+        buf.push_back(u.b[i]);
+    }
+}
+void appendLong(std::vector<uint8_t>& buf, int64_t value) {
+    buf.push_back((value >> 56) & 0xFF);
+    buf.push_back((value >> 48) & 0xFF);
+    buf.push_back((value >> 40) & 0xFF);
+    buf.push_back((value >> 32) & 0xFF);
+    buf.push_back((value >> 24) & 0xFF);
+    buf.push_back((value >> 16) & 0xFF);
+    buf.push_back((value >> 8)  & 0xFF);
+    buf.push_back(value & 0xFF);
+}
