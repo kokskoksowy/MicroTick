@@ -12,6 +12,14 @@ unsigned long lastTick = 0;
 void setup() {
     Serial.begin(115200);
     WiFIsetUP(); 
+
+
+    setCpuFrequencyMhz(240);
+    Serial.print("XTAL MHz: ");
+    Serial.println(getXtalFrequencyMhz());
+    
+    Serial.print("CPU MHz: ");
+    Serial.println(getCpuFrequencyMhz());
     server.begin();
     InitChunksAroundZero();
     Serial.print("Serwer nasłuchuje na porcie: ");

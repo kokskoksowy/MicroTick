@@ -9,6 +9,8 @@ extern uint8_t tags_bin[160];
 
 extern uint16_t block_palette[256]; // Block palette
 extern uint8_t network_block_palette[483]; // Block palette as VarInt buffer
+extern const uint8_t lightMap[53300];
+
 extern uint16_t B_to_I[256]; // Block-to-item mapping
 uint8_t I_to_B (uint16_t item); // Item-to-block mapping
 

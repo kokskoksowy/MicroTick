@@ -4,7 +4,7 @@
 #include "functions/functions.h"
 #include <settings.h>
 // globals
-std::vector<Connection> Connections;
+
 uint32_t nextConnectionId = 0;
 const String statusJson = R"json({
     "version": {
@@ -474,6 +474,7 @@ void SendTeleport(WiFiClient &client) {
 
 
 void sendKeepAlive(WiFiClient &client, int64_t id) {
+    Serial.print("(Out keepalive) ");
     std::vector<uint8_t> payload;
     appendVarInt(payload, 0x26);   // KeepAlive Packet ID (PLAY)
     appendLong(payload, id);
@@ -483,6 +484,20 @@ void sendKeepAlive(WiFiClient &client, int64_t id) {
     packet.insert(packet.end(), payload.begin(), payload.end());
 
     client.write(packet.data(), packet.size());
+}
+void HandleKeepAlive(Connection &conn, const uint8_t* payload, size_t length) {
+    Serial.print("(In keepalive) ");
+    size_t offset = 0;
+    int64_t recvId = readLong(payload, offset);  
+
+    if (conn.lastKeepAliveId == recvId) {
+        // reset timer
+        conn.lastKeepAliveRecv = millis(); 
+    } else {
+        
+        Serial.print("(Fake KeepAlive, disconnect) ");
+        //conn.client.stop();
+    }
 }
 
 
@@ -590,7 +605,6 @@ void sendSingleChunkFromMemory(WiFiClient &client, int _x, int _z) {
         for (int i = 7; i >= 0; i--) payload.push_back((v >> (8 * i)) & 0xFF);
     };
 
-    auto task_yield = [&]() { yield(); };
 
     int sizeVarInt256 = 2;
     
@@ -610,7 +624,6 @@ void sendSingleChunkFromMemory(WiFiClient &client, int _x, int _z) {
         appendByte(0);
         appendByte(0);
     }
-    task_yield();
     const int SECTION_HEIGHT = 16;
 
     for (int i = 0; i < 20; i++) {
@@ -652,7 +665,6 @@ void sendSingleChunkFromMemory(WiFiClient &client, int _x, int _z) {
         appendBytes(chunk_section, 4096);
         appendByte(0);
         appendByte(0); // biome
-        task_yield();
     }
 
 
@@ -675,16 +687,16 @@ void sendSingleChunkFromMemory(WiFiClient &client, int _x, int _z) {
     appendVarInt(26);
 
 
-    for (int i = 0; i < 4096; ++i) chunk_section[i] = 0xFF; 
-    for (int i = 0; i < 8; i++) {
-        appendVarInt(2048);
-        appendBytes(chunk_section, 2048);
-    }
-    for (int i = 0; i < 18; i++) {
-        appendVarInt(2048);
-        appendBytes(chunk_section, 2048); // Wysyła 0xFF
-    }
-
+    //for (int i = 0; i < 4096; ++i) chunk_section[i] = 0xFF; 
+    //for (int i = 0; i < 8; i++) {
+    //    appendVarInt(2048);
+    //    appendBytes(chunk_section, 2048);
+    //}
+    //for (int i = 0; i < 18; i++) {
+    //    appendVarInt(2048);
+    //    appendBytes(chunk_section, 2048); // Wysyła 0xFF
+    //}
+    appendBytes(lightMap, sizeof(lightMap));
 
     appendVarInt(0); // no block light
 
@@ -719,66 +731,155 @@ void sendSingleChunkFromMemory(WiFiClient &client, int _x, int _z) {
 
 
 }
+int16_t readShort(const uint8_t* buffer, size_t& offset) {
 
 
+    int16_t value = (int16_t(buffer[offset]) << 8) | int16_t(buffer[offset + 1]);
+    offset += 2;
 
+    return value;
+}
+void handlePlayerSlot(Connection& conn, const uint8_t* buffer) {
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-void HandleKeepAlive(Connection &conn, const uint8_t* payload, size_t length) {
     size_t offset = 0;
-    int64_t recvId = readLong(payload, offset);  
+    int16_t slot = readShort(buffer, offset);
 
-    if (conn.lastKeepAliveId == recvId) {
-        // reset timer
-        conn.lastKeepAliveRecv = millis(); 
-    } else {
-        
-        Serial.print("(Fake KeepAlive, disconnect) ");
-        conn.client.stop();
+    // Sprawdzenie zakresu Short
+    if (slot < 0 || slot > 8) {
+        conn.client->stop();
+        return;
     }
+
+    // Ustawienie slotu gracza
+    Serial.print("(Set Held: ");
+    Serial.print(slot);
+    Serial.print(") ");
+    conn.player->selectedHotbarSlot = slot;
+}
+void HandleCreativeSlot(Connection& conn,const uint8_t* buffer) {
+    size_t offset = 0;
+
+    // 1️⃣ Slot (short)
+    int16_t slot = readShort(buffer,  offset);
+    Serial.print("(Creative Slot:");
+    Serial.print(slot);
+
+    if (slot < 0 || slot > 46) {
+        Serial.println("❌ Invalid slot");
+        conn.client->stop();
+        return;
+    }
+
+    // 2️⃣ Item Count (VarInt)
+    int itemCount = readVarInt(buffer,  offset);
+    Serial.print(" Count:");
+    Serial.print(itemCount);
+    
+
+    int itemID = readVarInt(buffer, offset);
+    if (itemCount == 0) {
+        itemID = I_air;
+    }
+    conn.player->inventory.slots[slot].itemId = itemID;
+    conn.player->inventory.slots[slot].count = itemCount;
+    Serial.print(" Item ID:");
+    Serial.print(itemID);
+    Serial.print(") ");
+
+
+}
+double readDouble(const uint8_t* buffer, size_t& offset) {
+    uint64_t temp = 0;
+
+    // Minecraft przesyła double w big-endian, więc trzeba złożyć uint64_t
+    for (int i = 0; i < 8; i++) {
+        temp <<= 8;
+        temp |= buffer[offset++];
+    }
+
+    double value;
+    memcpy(&value, &temp, sizeof(double)); // kopiujemy bajty do double
+    return value;
+}
+void SetPlayerPosition(Connection& conn, const uint8_t* buffer) {
+    size_t offset = 0;
+
+    double X = readDouble(buffer,offset);
+    double FeetY = readDouble(buffer,offset);
+    double Z = readDouble(buffer,offset);
+    //debug flags Byte
+
+    conn.player->posX = X;
+    conn.player->posFeetY = FeetY;
+    conn.player->posZ = Z;
+
+}
+float readFloat(const uint8_t* buffer, size_t& offset) {
+    uint32_t temp = 0;
+
+    // Składamy 4 bajty w uint32_t (big-endian)
+    for (int i = 0; i < 4; i++) {
+        temp <<= 8;
+        temp |= buffer[offset++];
+    }
+
+    float value;
+    memcpy(&value, &temp, sizeof(float)); // kopiujemy bajty do float
+    return value;
+}
+void SetPlayerRotation(Connection& conn, const uint8_t* buffer) {
+    size_t offset = 0;
+
+    float Yaw = readFloat(buffer,offset);
+    float Pitch = readFloat(buffer,offset);
+    conn.player->Yaw = Yaw;
+    conn.player->Pitch = Pitch;
 }
 
 
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 void HandlePacket(Connection &conn, const uint8_t* data, size_t length) {
+    
     size_t offset = 0;
     int32_t packetLength = readVarInt(data,  offset);
     int32_t packetId = readVarInt(data,  offset);
@@ -793,6 +894,7 @@ void HandlePacket(Connection &conn, const uint8_t* data, size_t length) {
     //#################KEEPALIVE###################
     if (packetId == 0x1B) { // KeepAlive Response
         HandleKeepAlive(conn, payload, payloadLength); 
+        
         handled = true;
     }
 
@@ -806,16 +908,32 @@ void HandlePacket(Connection &conn, const uint8_t* data, size_t length) {
         if (packetId == 0xC) {//client Tick
             handled = true;
         } else if (packetId == 0x1D) {//Set Player Position
+            SetPlayerPosition(conn, payload);
+            Serial.print("SPP ");
             handled = true;
         } else if (packetId == 0x1E) {//Set Position & rotation
+            Serial.print("SPPR ");
             handled = true;
         } else if (packetId == 0x1F) {//rotation
+            Serial.print("SPR ");
+           // SetPlayerRotation(conn, payload);
             handled = true;
         } else if (packetId == 0x00) {//most likely Confirm Teleportation but there are 5 more packet with id 0x00
             handled = true;
         } else if (packetId == 0x20) {//Set Player Movement Flags
             handled = true;
         } else if (packetId == 0x2B) { // Player Loaded
+            handled = true;
+        } else if (packetId == 0x12) {//Close Container
+            handled = true; 
+        } else if (packetId == 0x2A) {//player Input
+            handled = true; 
+
+        }else if (packetId == 0x34) {
+            handlePlayerSlot(conn, payload);
+            handled = true;
+        } else if (packetId == 0x37&&conn.player->gamemode==1) {
+            HandleCreativeSlot(conn,payload);
             handled = true;
         }
     }
@@ -825,44 +943,44 @@ void HandlePacket(Connection &conn, const uint8_t* data, size_t length) {
         if (packetId == 0x00 && packetCounter == 1) { //LOGIN START
             parseLoginStart(payload, payloadLength,conn.player);
             
-            sendLoginSuccess(conn.client, conn.player);
+            sendLoginSuccess(*conn.client, conn.player);
             handled = true;
         } else if (packetId == 0x3 && packetCounter == 2) { //Login Acknowledged
             handled = true;
         } else if (packetId == 0x2 &&packetCounter == 3) {
-            handleBrand(conn.client,payload,payloadLength,conn.player);
+            handleBrand(*conn.client,payload,payloadLength,conn.player);
             handled = true;
         } else if (packetId == 0x0 && packetCounter == 4) {
-            handleClientInformation(conn.client,payload,payloadLength,conn.player);
-            sendSelectKnownPacks(conn.client);
+            handleClientInformation(*conn.client,payload,payloadLength,conn.player);
+            sendSelectKnownPacks(*conn.client);
             handled = true;
         } else if (packetId == 0x7 && packetCounter == 5) {
             //handleServerboundKnownPacks(data,length); broken LOL
-            sendRegistryData(conn.client);
-            sendFinishConfiguration(conn.client);
+            sendRegistryData(*conn.client);
+            sendFinishConfiguration(*conn.client);
             
             handled = true;
         } else if (packetId == 0x3 && packetCounter == 6) {//Acknowledge Finish Configuration
-            sendLoginPlay(conn.client,conn.player);
+            sendLoginPlay(*conn.client,conn.player);
 
-            sendStartWaitingChunks_Custom(conn.client);
-            sendSetChunkCenter_Custom(conn.client);
+            sendStartWaitingChunks_Custom(*conn.client);
+            sendSetChunkCenter_Custom(*conn.client);
 
 
             uint32_t start = millis();
-            sendSingleChunkFromMemory(conn.client,-1,-1);
-            sendSingleChunkFromMemory(conn.client,0,-1);
-            sendSingleChunkFromMemory(conn.client,1,-1);
+            sendSingleChunkFromMemory(*conn.client,-1,-1);
+            sendSingleChunkFromMemory(*conn.client,0,-1);
+            sendSingleChunkFromMemory(*conn.client,1,-1);
 
-            sendSingleChunkFromMemory(conn.client,-1,0);
-            sendSingleChunkFromMemory(conn.client,0,0);
-            sendSingleChunkFromMemory(conn.client,1,0);
+            sendSingleChunkFromMemory(*conn.client,-1,0);
+            sendSingleChunkFromMemory(*conn.client,0,0);
+            sendSingleChunkFromMemory(*conn.client,1,0);
 
-            sendSingleChunkFromMemory(conn.client,-1,1);
-            sendSingleChunkFromMemory(conn.client,0,1);
-            sendSingleChunkFromMemory(conn.client,1,1);
+            sendSingleChunkFromMemory(*conn.client,-1,1);
+            sendSingleChunkFromMemory(*conn.client,0,1);
+            sendSingleChunkFromMemory(*conn.client,1,1);
 
-            SendTeleport(conn.client);
+            SendTeleport(*conn.client);
             connectionState = 3;
 
             Serial.print("(TOOK: ");
@@ -875,10 +993,10 @@ void HandlePacket(Connection &conn, const uint8_t* data, size_t length) {
     //##############################PING##############################
     if (connectionState == 1) {
         if (packetId == 0x00&& packetCounter == 0) { //PING
-            sendStatusResponse(conn.client);
+            sendStatusResponse(*conn.client);
             handled = true;
         } else if (packetId == 0x1) { //PONG
-            sendPongResponse(conn.client, payload, payloadLength);
+            sendPongResponse(*conn.client, payload, payloadLength);
             handled = true;
         } else if (packetId == 0x00) {
             handled = true;  //legacy shit
@@ -955,86 +1073,93 @@ void HandlePacket(Connection &conn, const uint8_t* data, size_t length) {
 
 
 
-
-
-
+Connection* Connections[MAX_CLIENTS] = { nullptr };
 void MinecraftServerTick(WiFiServer &server) {
     WiFiClient newClient = server.available();
     if (newClient) {
-        Connection conn;
-        conn.id = nextConnectionId++;
-        conn.client = newClient;
-        conn.connectionState = -1;
-        conn.packetCounter = 0;
-        conn.player = nullptr;
-
-        conn.lastKeepAliveSent = millis();
-        conn.lastKeepAliveRecv = millis(); 
-
-        Connections.push_back(conn);
-        Serial.print("Nowy klient połączony! ID: ");
-        Serial.println(conn.id);
+        // znajdź wolne miejsce
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (Connections[i] == nullptr) {
+                Connections[i] = new Connection();
+                Connections[i]->id = nextConnectionId++;
+                Connections[i]->client = new WiFiClient(newClient);  // oddzielny WiFiClient
+                Connections[i]->connectionStart = millis();
+                Connections[i]->lastKeepAliveSent = millis();
+                Connections[i]->lastKeepAliveRecv = millis();
+                Connections[i]->packetCounter = 0;
+                Connections[i]->connectionState = -1;
+                Connections[i]->player = nullptr;
+                Connections[i]->recvBuffer.clear();
+                Serial.print("Nowy klient połączony! ID: ");
+                Serial.println(Connections[i]->id);
+                break;
+            }
+        }
     }
-    
 
-    for (size_t i = 0; i < Connections.size(); i++) {
-        Connection &conn = Connections[i];
+    uint32_t now = millis();
 
-        uint32_t now = millis();
+    // iteracja po klientach
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        Connection* conn = Connections[i];
+        if (!conn || !conn->client || !conn->client->connected()) continue;
 
-        //########keepalive##########
-        if (now - conn.lastKeepAliveSent >= KEEPALIVE_SEND_INTERVAL) {
-            conn.lastKeepAliveId = esp_random(); 
-            sendKeepAlive(conn.client, conn.lastKeepAliveId);
-            conn.lastKeepAliveSent = now;
+        // ---- KeepAlive ----
+        if (now - conn->lastKeepAliveSent >= KEEPALIVE_SEND_INTERVAL) {
+            conn->lastKeepAliveId = esp_random();
+            sendKeepAlive(*conn->client, conn->lastKeepAliveId);
+            conn->lastKeepAliveSent = now;
         }
-        if (now - conn.lastKeepAliveRecv >= KEEPALIVE_TIMEOUT) {
-            Serial.println("(KeepAlive timeout, disconnect )");
-            conn.client.stop();
-            Connections.erase(Connections.begin() + i);
-            i--;
+
+        if (now - conn->lastKeepAliveRecv >= KEEPALIVE_TIMEOUT) {
+            Serial.print("KeepAlive timeout, rozłączanie klienta ID: ");
+            Serial.println(conn->id);
+            conn->client->stop();
+            delete conn->client;
+            delete conn;
+            Connections[i] = nullptr;
             continue;
         }
 
-
-        if (!conn.client.connected()) {
-            Serial.print("Klient ID: ");
-            Serial.print(conn.id);
-            Serial.println(" rozłączony.");
-            conn.client.stop();
-            Connections.erase(Connections.begin() + i);
-            i--;
-            continue;
-        }
-
-        while (conn.client.available()) {
-            
-
-
+        // ---- Odbieranie danych ----
+        while (conn->client->available()) {
             uint8_t buffer[256];
-            size_t len = conn.client.read(buffer, sizeof(buffer));
+            size_t len = conn->client->read(buffer, sizeof(buffer));
             if (len > 0) {
-                conn.recvBuffer.insert(conn.recvBuffer.end(), buffer, buffer + len);
+                conn->recvBuffer.insert(conn->recvBuffer.end(), buffer, buffer + len);
 
-             
                 size_t processed = 0;
-                while (true) {
+                while (processed < conn->recvBuffer.size()) {
                     size_t varIntSize = 0;
-                    int32_t packetLen = tryReadVarInt(conn.recvBuffer, processed, varIntSize);
-                    if (packetLen <= 0) break;
-                    if (conn.recvBuffer.size() - processed - varIntSize < (size_t)packetLen) break;
+                    int32_t packetLen = tryReadVarInt(conn->recvBuffer, processed, varIntSize);
+                    if (packetLen <= 0) break; 
+                    if (conn->recvBuffer.size() - processed - varIntSize < (size_t)packetLen) break;
 
                     size_t totalPacketSize = varIntSize + packetLen;
-                    HandlePacket(conn, conn.recvBuffer.data() + processed, totalPacketSize);
-
-                    conn.packetCounter++;
+                    HandlePacket(*conn, conn->recvBuffer.data() + processed, totalPacketSize);
+                    conn->packetCounter++;
                     processed += totalPacketSize;
                 }
 
                 if (processed > 0) {
-                    conn.recvBuffer.erase(conn.recvBuffer.begin(), conn.recvBuffer.begin() + processed);
+                    conn->recvBuffer.erase(conn->recvBuffer.begin(), conn->recvBuffer.begin() + processed);
                 }
             }
         }
+    }
+
+    // ---- Cleanup rozłączonych klientów ----
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        Connection* conn = Connections[i];
+        if (conn && (!conn->client || !conn->client->connected())) {
+            Serial.printf("Disconnected player: %d",conn->id);
+            if (!conn->client->connected()) {
+                delete conn->client;
+                delete conn;
+            }
+
+            Connections[i] = nullptr;
+        }
+
     }
 }

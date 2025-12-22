@@ -6,12 +6,26 @@
 #include <vector>
 #include <string>
 
+struct ItemStack {
+    uint16_t itemId;   // ID itemu (np. B_dirt, I_dirt)
+    uint8_t count;     // ilość (1–64)
+};
+
+struct Inventory {
+    ItemStack slots[46]; 
+};
+
 struct Player {
     String name = "";
     String uuid = "";
     int connectionState = -1;
     int entityId =-1;
 
+    double posX;
+    double posFeetY;
+    double posZ;
+    float Yaw;
+    float Pitch;
 
     //inf0
     String brand = "";
@@ -25,13 +39,23 @@ struct Player {
     bool allowServerListings;
     int particleStatus = 0;
 
+    //player
+    Inventory inventory;
+    uint8_t selectedHotbarSlot = 0;
+    Player() {
+        for (int i = 0; i < 46; i++) {
+            inventory.slots[i].itemId = 0;
+            inventory.slots[i].count = 0;
+        }
+    }
+
     int gamemode = -1;;
 };
 
 struct Connection {
     uint32_t id;            
     Player* player = nullptr; 
-    WiFiClient client;    
+    WiFiClient* client = nullptr;
     unsigned long connectionStart;
     int8_t connectionState = -1;
     uint32_t packetCounter;
@@ -67,8 +91,8 @@ extern std::vector<Chunk> chunks;
 void InitChunksAroundZero();
 Chunk* getChunk(int32_t x, int32_t z);
 //##################CHUNKS##################
-
-extern std::vector<Connection> Connections;
+#define MAX_CLIENTS 10
+extern Connection* Connections[MAX_CLIENTS];
 extern uint32_t nextConnectionId;
 
 void HandlePacket(Connection &conn, const uint8_t* data, size_t length); 
